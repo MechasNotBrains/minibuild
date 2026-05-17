@@ -51,16 +51,16 @@ proc run *(cmd :Command) :CommandResult {.discardable.}=
 #_____________________________
 type NimBackend *{.pure.}= enum c, cpp, js
 #___________________
+type ConfigFormat * = object
+  active  *:bool= false
+  cmd     *:Command= Command()
+#___________________
 type ConfigNim * = object
   bin      *:Path= "nim"
   dir      *:Path= ".nim"
   cache    *:Path= ".nim"
   backend  *:NimBackend= NimBackend.c
   format   *:ConfigFormat= ConfigFormat(cmd: command("nimpretty"))
-#___________________
-type ConfigFormat * = object
-  active  *:bool= false
-  cmd     *:Command= Command()
 #___________________
 type ConfigC * = object
   bin      *:Path= "zig"
@@ -220,6 +220,7 @@ func target *(
   result = Target(src: @[], cfg: cfg, flags: flags, deps: deps)
   result.src.add( result.cfg.dir.src/entry )
   for file in src: result.src.add( result.cfg.dir.src/file )
+  result.lang = Language.From(result.src)
   result.trg = case trg
     of "" : result.src[0].splitFile.name
     else  : trg
