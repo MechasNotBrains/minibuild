@@ -55,6 +55,9 @@ type ConfigNim * = object
   cache    *:Path= ".nim"
   backend  *:NimBackend= NimBackend.c
 #___________________
+type ConfigC * = object
+  bin      *:Path= "zig"
+#___________________
 type ConfigDir * = object
   root  *:Path= "."
   bin   *:Path= "bin"
@@ -81,6 +84,7 @@ type Report * = object
 type Config * = object
   dir  *:ConfigDir = ConfigDir()
   nim  *:ConfigNim = ConfigNim()
+  c    *:ConfigC   = ConfigC()
   log  *:Report    = Report()
 
 
@@ -110,7 +114,15 @@ func debug *(R :Report; args :varargs[string, `$`]) :void=
 #_____________________________
 type Language *{.pure.}= enum unknown, nim, c, cpp, zig
 #___________________
-func From *(_:typedesc[Language]; src :SourceList) :Language= nim
+func From *(_:typedesc[Language]; src :SourceList) :Language=
+  if src.len == 0: return Language.unknown
+  let extension = src[0].splitFile.ext
+  case extension
+  of ".nim": Language.nim
+  of ".c":   Language.c
+  of ".cpp", ".cc", ".cxx": Language.cpp
+  of ".zig": Language.zig
+  else:      Language.unknown
 #___________________
 func toLanguage *(src :SourceList) :Language= Language.From(src)
 func toLang     *(src :SourceList) :Language= Language.From(src)
@@ -194,17 +206,40 @@ func program *(
     deps  : Dependencies = @[];
   ) :Target= result = minibuild.target(Program, entry, trg, src, cfg, flags, deps)
 #___________________
+proc command_nim (trg :Target; run :bool) :Command=
+  result = minibuild.command(trg.cfg.nim.bin)
+  result.add($trg.cfg.nim.backend)
+  if run: result.add("-r")
+  for flag in trg.flags: result.add(flag)
+  for dep in trg.deps: result.add(dep.paths(trg.cfg))
+  result.add(&"--out:{trg.bin()}")
+  result.add(&"--outDir:{trg.outDir()}")
+  result.add(trg.entry())
+
+proc command_c (trg :Target) :Command=
+  let tag = case trg.lang
+    of Language.cpp: "c++"
+    else:            "cc"
+  result = minibuild.command(trg.cfg.c.bin)
+  result.add(tag)
+  for flag in trg.flags: result.add(flag)
+  for dep in trg.deps:
+    result.add(&"-I{trg.cfg.dir.bin}/{trg.cfg.dir.lib}/{dep.name}/{dep.path}")
+  for source in trg.src: result.add(source)
+  result.add(&"-o {trg.outDir()}/{trg.bin()}")
+
 proc build *(trg :Target; run :bool= false) :Target {.discardable.}=
-  var cmd = minibuild.command(trg.cfg.nim.bin)
-  cmd.add($trg.cfg.nim.backend)
-  if run: cmd.add("-r")
-  for flag in trg.flags: cmd.add(flag)
-  for dep  in trg.deps:  cmd.add(dep.paths(trg.cfg))
-  cmd.add(&"--out:{trg.bin()}")
-  cmd.add(&"--outDir:{trg.outDir()}")
-  cmd.add(trg.entry())
+  let cmd = case trg.lang
+    of Language.c, Language.cpp: trg.command_c()
+    of Language.nim:             trg.command_nim(run)
+    else:
+      assert false, "minibuild: unsupported language: " & $trg.lang
   trg.debug("Build Command:\n  " & cmd.join())
   cmd.run()
+  if run and trg.lang in {Language.c, Language.cpp}:
+    let binary = trg.outDir()/trg.bin()
+    trg.debug("Running:\n  " & binary)
+    discard os.execShellCmd(binary)
   result = trg
 
 
