@@ -44,6 +44,8 @@ proc run *(cmd :Command) :CommandResult {.discardable.}=
   result = CommandResult(code: os.execShellCmd(cmd.parts.join(" ")).u8)
 
 
+
+
 #_______________________________________
 # @section Configuration
 #_____________________________
@@ -54,9 +56,19 @@ type ConfigNim * = object
   dir      *:Path= ".nim"
   cache    *:Path= ".nim"
   backend  *:NimBackend= NimBackend.c
+  format   *:ConfigFormat= ConfigFormat(cmd: command("nimpretty"))
+#___________________
+type ConfigFormat * = object
+  active  *:bool= false
+  cmd     *:Command= Command()
 #___________________
 type ConfigC * = object
   bin      *:Path= "zig"
+  format   *:ConfigFormat= ConfigFormat(cmd: command("clang-format", "-i"))
+#___________________
+type ConfigZig * = object
+  bin      *:Path= "zig"
+  format   *:ConfigFormat= ConfigFormat(cmd: command("zig", "fmt"))
 #___________________
 type ConfigDir * = object
   root  *:Path= "."
@@ -82,10 +94,11 @@ type Report * = object
   mode     *:ReportTarget = all
 #___________________
 type Config * = object
-  dir  *:ConfigDir = ConfigDir()
-  nim  *:ConfigNim = ConfigNim()
-  c    *:ConfigC   = ConfigC()
-  log  *:Report    = Report()
+  dir  *:ConfigDir  = ConfigDir()
+  nim  *:ConfigNim  = ConfigNim()
+  c    *:ConfigC    = ConfigC()
+  zig  *:ConfigZig  = ConfigZig()
+  log  *:Report     = Report()
 
 
 #_______________________________________
@@ -182,6 +195,18 @@ func binary *(trg :Target) :Path= result = trg.outDir()/trg.bin()
 proc entry *(trg :Target) :Path=  trg.src[0]
 #___________________
 func debug *(trg :Target; args :varargs[string, `$`]) :void= trg.cfg.log.debug(args)
+#___________________
+proc format *(trg :Target; file :Path) :void=
+  let fmt = case trg.lang
+    of Language.c,
+       Language.cpp : trg.cfg.c.format
+    of Language.zig : trg.cfg.zig.format
+    of Language.nim : trg.cfg.nim.format
+    else            : return
+  if not fmt.active: return
+  var cmd = fmt.cmd
+  cmd.add(file)
+  cmd.run()
 #___________________
 func target *(
     kind  : Kind;
