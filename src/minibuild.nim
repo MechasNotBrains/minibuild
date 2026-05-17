@@ -170,12 +170,14 @@ type Target * = object
   flags  :FlagsList    = default(FlagsList)
   deps   :Dependencies = @[]
 #___________________
-func outDir *(trg :Target) :Path= trg.cfg.dir.root/trg.cfg.dir.bin/trg.cfg.dir.sub
-func srcDir *(trg :Target) :Path= trg.cfg.dir.root/trg.cfg.dir.src
+func srcDir *(trg :Target) :Path= result = trg.cfg.dir.root/trg.cfg.dir.src
+func outDir *(trg :Target) :Path= result = trg.cfg.dir.root/trg.cfg.dir.bin/trg.cfg.dir.sub
 #___________________
 func bin *(trg :Target) :Path= result = case trg.lang
   of nim : trg.trg
   else   : trg.trg
+#___________________
+func binary *(trg :Target) :Path= result = trg.outDir()/trg.bin()
 #___________________
 proc entry *(trg :Target) :Path=  trg.src[0]
 #___________________
@@ -205,7 +207,11 @@ func program *(
     flags : FlagsList    = default(FlagsList);
     deps  : Dependencies = @[];
   ) :Target= result = minibuild.target(Program, entry, trg, src, cfg, flags, deps)
-#___________________
+
+
+#_______________________________________
+# @section Build & Commands
+#_____________________________
 proc command_nim (trg :Target; run :bool) :Command=
   result = minibuild.command(trg.cfg.nim.bin)
   result.add($trg.cfg.nim.backend)
@@ -215,29 +221,27 @@ proc command_nim (trg :Target; run :bool) :Command=
   result.add(&"--out:{trg.bin()}")
   result.add(&"--outDir:{trg.outDir()}")
   result.add(trg.entry())
-
+#___________________
 proc command_c (trg :Target) :Command=
-  let tag = case trg.lang
-    of Language.cpp: "c++"
-    else:            "cc"
   result = minibuild.command(trg.cfg.c.bin)
-  result.add(tag)
-  for flag in trg.flags: result.add(flag)
-  for dep in trg.deps:
-    result.add(&"-I{trg.cfg.dir.bin}/{trg.cfg.dir.lib}/{dep.name}/{dep.path}")
-  for source in trg.src: result.add(source)
-  result.add(&"-o {trg.outDir()}/{trg.bin()}")
-
+  result.add(case trg.lang
+    of Language.cpp : "c++"
+    else            : "cc" )
+  result.add(trg.flags)
+  for dep in trg.deps:  result.add(&"-I{trg.cfg.dir.bin}/{trg.cfg.dir.lib}/{dep.name}/{dep.path}")
+  result.add(trg.src)
+  result.add(@["-o", &"{trg.outDir()}/{trg.bin()}"])
+#___________________
 proc build *(trg :Target; run :bool= false) :Target {.discardable.}=
   let cmd = case trg.lang
-    of Language.c, Language.cpp: trg.command_c()
-    of Language.nim:             trg.command_nim(run)
-    else:
-      assert false, "minibuild: unsupported language: " & $trg.lang
+    of Language.c,
+       Language.cpp : trg.command_c()
+    of Language.nim : trg.command_nim(run)
+    else            : assert false, "minibuild: unsupported language: " & $trg.lang; Command()
   trg.debug("Build Command:\n  " & cmd.join())
   cmd.run()
   if run and trg.lang in {Language.c, Language.cpp}:
-    let binary = trg.outDir()/trg.bin()
+    let binary = trg.binary()
     trg.debug("Running:\n  " & binary)
     discard os.execShellCmd(binary)
   result = trg
