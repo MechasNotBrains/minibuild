@@ -67,12 +67,13 @@ type ConfigC * = object
   format   *:ConfigFormat= ConfigFormat(cmd: command("clang-format", "-i"))
 #___________________
 type ConfigZig * = object
-  bin      *:Path= "zig"
-  format   *:ConfigFormat= ConfigFormat(cmd: command("zig", "fmt"))
+  bin       *:Path= "zig"
+  format    *:ConfigFormat= ConfigFormat(cmd: command("zig", "fmt"))
+  debugger  *:bool= true
 #___________________
 type ConfigNonim * = object
-  bin      *:Path= "minz"
-  cache    *:Path= "bin/.cache/nonim"
+  bin    *:Path= "minz"
+  cache  *:Path= "bin/.cache/nonim"
 #___________________
 type ConfigDir * = object
   root  *:Path= "."
@@ -309,6 +310,7 @@ proc command_zig (trg :Target) :Command=
   of Program   : result.add "build-exe"
   of UnitTest  : result.add "test"
   result.add "-femit-bin=" & trg.outDir()/trg.bin()
+  if trg.cfg.zig.debugger: result.add "-fllvm"
   if trg.has_modules():
     for dep in trg.deps: result.add dep.zig_dep_only()
     result.add "-Mroot=" & trg.entry()
