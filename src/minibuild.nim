@@ -6,6 +6,8 @@ from std/os import `/`, splitFile
 from std/strutils import join, escape
 from std/strformat import `&`
 from std/sequtils import toSeq
+from std/osproc import startProcess, outputStream, errorStream, waitForExit, close, ProcessOption
+from std/streams import readAll
 # @deps (Optional)
 when defined(minilog):
   from minilog as log import nil
@@ -26,6 +28,7 @@ type FlagsList  * = system.seq[string]
 type CommandResult * = object
   stdin   *:string = ""
   stdout  *:string = ""
+  stderr  *:string = ""
   code    *:u8     = 0
 #___________________
 type Command * = object
@@ -42,6 +45,17 @@ func add *(cmd :var Command; args :varargs[string, `$`]) :var Command {.discarda
 #___________________
 proc run *(cmd :Command) :CommandResult {.discardable.}=
   result = CommandResult(code: os.execShellCmd(cmd.parts.join(" ")).u8)
+#___________________
+proc exec *(cmd :Command) :CommandResult {.discardable.}=
+  let process = osproc.startProcess(
+    cmd.parts[0],
+    args = cmd.parts[1 .. ^1],
+    options = {ProcessOption.poUsePath},
+  )
+  result.stdout = process.outputStream().readAll()
+  result.stderr = process.errorStream().readAll()
+  result.code = process.waitForExit().u8
+  process.close()
 
 
 
@@ -71,8 +85,13 @@ type ConfigZig * = object
   format    *:ConfigFormat= ConfigFormat(cmd: command("zig", "fmt"))
   debugger  *:bool= true
 #___________________
+type ConfigNonimBin * = object
+  nonim  *:Path= "nonim"
+  minz   *:Path= "minz"
+  minc   *:Path= "minc"
+#___________________
 type ConfigNonim * = object
-  bin    *:Path= "minz"
+  bin    *:ConfigNonimBin= ConfigNonimBin()
   cache  *:Path= "bin/.cache/nonim"
 #___________________
 type ConfigDir * = object
@@ -131,7 +150,7 @@ func debug *(R :Report; args :varargs[string, `$`]) :void=
 #_______________________________________
 # @section Target: Language
 #_____________________________
-type Language *{.pure.}= enum unknown, nim, c, cpp, zig, minz
+type Language *{.pure.}= enum unknown, nim, c, cpp, zig, minz, minc
 #___________________
 func From *(_:typedesc[Language]; src :SourceList) :Language=
   if src.len == 0: return Language.unknown
@@ -142,6 +161,7 @@ func From *(_:typedesc[Language]; src :SourceList) :Language=
   of ".cpp", ".cc", ".cxx": Language.cpp
   of ".zig": Language.zig
   of ".zm":  Language.minz
+  of ".cm":  Language.minc
   else:      Language.unknown
 #___________________
 func toLanguage *(src :SourceList) :Language= Language.From(src)
@@ -172,18 +192,21 @@ func dependency *(
     deps  : Dependencies = @[];
   ) :Dependency= Dependency(name: name, url: url, path: path, entry: entry, deps: deps,)
 #___________________
-func paths *(D :Dependency; cfg :Config) :seq[string]=
+func dir_src *(D :Dependency; cfg :Config= Config()) :Path=
+  let libDir = if D.libDir.len > 0: D.libDir else: cfg.dir.bin/cfg.dir.lib
+  result = libDir/D.name/D.path
+#___________________
+func nim_paths *(D :Dependency; cfg :Config) :seq[string]=
   result.add("--path:" & cfg.dir.bin/cfg.dir.lib/D.name/D.path)
-  for dep in D.deps: result.add dep.paths(cfg)
+  for dep in D.deps: result.add dep.nim_paths(cfg)
 #___________________
 func zig_dep_only *(D :Dependency) :seq[string]=
   result.add("--dep")
   result.add(D.name)
 #___________________
 func zig_module_path *(D :Dependency; cfg :Config) :Path=
-  let lib_dir = if D.libDir.len > 0: D.libDir else: cfg.dir.bin/cfg.dir.lib
   let entry_file = if D.entry.len > 0: D.entry else: D.name & ".zig"
-  lib_dir/D.name/D.path/entry_file
+  result = D.dir_src(cfg)/entry_file
 #___________________
 func zig_collect_transitive_deps (D :Dependency; seen :var seq[string]) :void=
   for subdep in D.deps:
@@ -239,6 +262,18 @@ proc format *(trg :Target; file :Path) :void=
   cmd.add(file)
   cmd.run()
 #___________________
+proc format_exec *(trg :Target; file :Path) :CommandResult {.discardable.}=
+  let fmt = case trg.lang
+    of Language.c,
+       Language.cpp : trg.cfg.c.format
+    of Language.zig : trg.cfg.zig.format
+    of Language.nim : trg.cfg.nim.format
+    else            : return
+  if not fmt.active: return
+  var cmd = fmt.cmd
+  cmd.add(file)
+  result = cmd.exec()
+#___________________
 func target *(
     kind  : Kind;
     entry : Path;
@@ -282,7 +317,7 @@ proc command_nim (trg :Target) :Command=
   result = minibuild.command(trg.cfg.nim.bin)
   result.add($trg.cfg.nim.backend)
   for flag in trg.flags: result.add(flag)
-  for dep in trg.deps: result.add(dep.paths(trg.cfg))
+  for dep in trg.deps: result.add(dep.nim_paths(trg.cfg))
   result.add(&"--out:{trg.bin()}")
   result.add(&"--outDir:{trg.outDir()}")
   result.add(trg.entry())
@@ -342,7 +377,7 @@ proc nonim_dep_serialize (dep :Dependency; cfg :Config; cmd :var Command; seen :
   seen.add(dep.name)
 #___________________
 proc command_nonim (trg :Target) :Command=
-  result = minibuild.command(trg.cfg.nonim.bin)
+  result = minibuild.command(trg.cfg.nonim.bin.minz)
   result.add "c"
   if trg.cfg.log.level >= ReportMode.verbose: result.add "-v"
   result.add "--binDir:" & trg.outDir()
@@ -364,11 +399,54 @@ proc build *(trg :Target; run :bool= false) :Target {.discardable.}=
     else             : assert false, "minibuild: unsupported language: " & $trg.lang; Command()
   trg.debug("Build Command:\n  " & cmd.join())
   cmd.run()
-  if run and trg.lang in {Language.c, Language.cpp, Language.zig, Language.minz}:
+  if run:
     let binary = trg.binary()
     trg.debug("Running:\n  " & binary)
     discard os.execShellCmd(binary)
   result = trg
+
+
+#_______________________________________
+# @section Source-to-Source Codegen
+#_____________________________
+func codegen_bin (lang :Language; cfg :Config) :Path=
+  ## Compiler binary that owns source-to-source codegen for {@arg lang}.
+  case lang
+  of Language.minz : cfg.nonim.bin.minz
+  of Language.minc : cfg.nonim.bin.minc
+  else             : assert false, "minibuild.codegen: unsupported language: " & $lang; ""
+#___________________
+func codegen_outdir (lang :Language) :Path=
+  ## Default output sub-folder (under `cfg.dir.src`) for {@arg lang}'s generated code.
+  case lang
+  of Language.minz : result = "zig"
+  of Language.minc : result = "C"
+  else             : assert false, "minibuild.codegen: unsupported language: " & $lang
+#___________________
+proc codegen *(
+    lang  : Language;
+    input : Path;
+    trg   : Path   = "";
+    cfg   : Config = Config();
+  ) :CommandResult {.discardable.}=
+  ## Source-to-source codegen. Dispatches to the compiler selected by {@arg lang}
+  ## (minz handles `.zm` -> Zig, minc handles `.cm` -> C) and generates {@arg input}
+  ## (a file or a folder) into {@arg trg}, replicating the input folder structure.
+  ## Files merged via `include`, and `.nim` files, are not emitted as separate output.
+  ##
+  ## {@arg input} `name` is composed from {@arg cfg}`.dir.src` -> `<src>/name`.
+  ## {@arg trg} is used as-is when given, and defaults to `<src>/zig` (minz) or
+  ## `<src>/C` (minc) when omitted.
+  let in_path  = cfg.dir.src/input
+  let out_path = if trg.len > 0: trg else: cfg.dir.src/lang.codegen_outdir()
+  var cmd = minibuild.command(lang.codegen_bin(cfg))
+  cmd.add "cc"
+  cmd.add in_path
+  cmd.add out_path
+  if cfg.log.level >= ReportMode.verbose : cmd.add "--verbose"
+  if cfg.log.level <= ReportMode.quiet   : cmd.add "--quiet"
+  cfg.log.debug("Codegen Command:\n  " & cmd.join())
+  result = cmd.run()
 
 
 #_______________________________________
