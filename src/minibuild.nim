@@ -94,6 +94,13 @@ type ConfigNonim * = object
   bin    *:ConfigNonimBin= ConfigNonimBin()
   cache  *:Path= "bin/.cache/nonim"
 #___________________
+type ConfigGLSLUnsafe * = object
+  warnings  *:bool= false
+#___________________
+type ConfigGLSL * = object
+  bin     *:Path= "glslc"
+  unsafe  *:ConfigGLSLUnsafe= ConfigGLSLUnsafe()
+#___________________
 type ConfigDir * = object
   root  *:Path= "."
   bin   *:Path= "bin"
@@ -123,6 +130,7 @@ type Config * = object
   c      *:ConfigC      = ConfigC()
   zig    *:ConfigZig    = ConfigZig()
   nonim  *:ConfigNonim  = ConfigNonim()
+  glsl   *:ConfigGLSL   = ConfigGLSL()
   log    *:Report       = Report()
 
 
@@ -150,19 +158,22 @@ func debug *(R :Report; args :varargs[string, `$`]) :void=
 #_______________________________________
 # @section Target: Language
 #_____________________________
-type Language *{.pure.}= enum unknown, nim, c, cpp, zig, minz, minc
+type Language *{.pure.}= enum unknown, nim, c, cpp, zig, minz, minc, glsl, wgsl
 #___________________
 func From *(_:typedesc[Language]; src :SourceList) :Language=
   if src.len == 0: return Language.unknown
   let extension = src[0].splitFile.ext
   case extension
-  of ".nim": Language.nim
-  of ".c":   Language.c
-  of ".cpp", ".cc", ".cxx": Language.cpp
-  of ".zig": Language.zig
-  of ".zm":  Language.minz
-  of ".cm":  Language.minc
-  else:      Language.unknown
+  of ".nim"                    : Language.nim
+  of ".c"                      : Language.c
+  of ".cpp", ".cc", ".cxx"     : Language.cpp
+  of ".zig"                    : Language.zig
+  of ".zm"                     : Language.minz
+  of ".cm"                     : Language.minc
+  of ".glsl", ".hlsl",
+     ".frag", ".vert", ".comp" : Language.glsl
+  of ".wgsl"                   : Language.wgsl
+  else                         : Language.unknown
 #___________________
 func toLanguage *(src :SourceList) :Language= Language.From(src)
 func toLang     *(src :SourceList) :Language= Language.From(src)
@@ -200,6 +211,11 @@ func nim_paths *(D :Dependency; cfg :Config) :seq[string]=
   result.add("--path:" & cfg.dir.bin/cfg.dir.lib/D.name/D.path)
   for dep in D.deps: result.add dep.nim_paths(cfg)
 #___________________
+proc has_modules (trg :Target) :bool=
+  if trg.deps.len > 0: return true
+  for flag in trg.flags:
+    if flag.len > 2 and flag[0] == '-' and flag[1] == 'M': return true
+#___________________
 func zig_dep_only *(D :Dependency) :seq[string]=
   result.add("--dep")
   result.add(D.name)
@@ -221,6 +237,26 @@ func zig_module *(D :Dependency; cfg :Config) :seq[string]=
     result.add("--dep")
     result.add(dep_name)
   result.add("-M" & D.name & "=" & D.zig_module_path(cfg))
+#___________________
+proc nonim_dep_path (dep :Dependency; cfg :Config) :Path=
+  let lib_dir = if dep.libDir.len > 0: dep.libDir else: cfg.dir.bin/cfg.dir.lib
+  let entry_file = if dep.entry.len > 0: dep.entry else: dep.name & ".zig"
+  lib_dir/dep.name/dep.path/entry_file
+#___________________
+proc collect_transitive_dep_names (dep :Dependency; result :var seq[string]) =
+  for subdep in dep.deps:
+    collect_transitive_dep_names(subdep, result)
+    if subdep.name notin result:
+      result.add(subdep.name)
+#___________________
+proc nonim_dep_serialize (dep :Dependency; cfg :Config; cmd :var Command; seen :var seq[string]) =
+  if dep.name in seen: return
+  for subdep in dep.deps:
+    nonim_dep_serialize(subdep, cfg, cmd, seen)
+  var subdep_names :seq[string]
+  collect_transitive_dep_names(dep, subdep_names)
+  cmd.add "--dependency:" & dep.name & ":[" & subdep_names.join(",") & "]:" & dep.nonim_dep_path(cfg)
+  seen.add(dep.name)
 
 
 #_______________________________________
@@ -313,15 +349,6 @@ func unit_test *(
 #_______________________________________
 # @section Build & Commands
 #_____________________________
-proc command_nim (trg :Target) :Command=
-  result = minibuild.command(trg.cfg.nim.bin)
-  result.add($trg.cfg.nim.backend)
-  for flag in trg.flags: result.add(flag)
-  for dep in trg.deps: result.add(dep.nim_paths(trg.cfg))
-  result.add(&"--out:{trg.bin()}")
-  result.add(&"--outDir:{trg.outDir()}")
-  result.add(trg.entry())
-#___________________
 proc command_c (trg :Target) :Command=
   result = minibuild.command(trg.cfg.c.bin)
   result.add(case trg.lang
@@ -331,11 +358,6 @@ proc command_c (trg :Target) :Command=
   for dep in trg.deps:  result.add(&"-I{trg.cfg.dir.bin}/{trg.cfg.dir.lib}/{dep.name}/{dep.path}")
   result.add(trg.src)
   result.add(@["-o", &"{trg.outDir()}/{trg.bin()}"])
-#___________________
-proc has_modules (trg :Target) :bool=
-  if trg.deps.len > 0: return true
-  for flag in trg.flags:
-    if flag.len > 2 and flag[0] == '-' and flag[1] == 'M': return true
 #___________________
 proc command_zig (trg :Target) :Command=
   result = minibuild.command(trg.cfg.zig.bin)
@@ -356,25 +378,14 @@ proc command_zig (trg :Target) :Command=
     result.add trg.entry()
   for flag in trg.flags: result.add(flag)
 #___________________
-proc nonim_dep_path (dep :Dependency; cfg :Config) :Path=
-  let lib_dir = if dep.libDir.len > 0: dep.libDir else: cfg.dir.bin/cfg.dir.lib
-  let entry_file = if dep.entry.len > 0: dep.entry else: dep.name & ".zig"
-  lib_dir/dep.name/dep.path/entry_file
-#___________________
-proc collect_transitive_dep_names (dep :Dependency; result :var seq[string]) =
-  for subdep in dep.deps:
-    collect_transitive_dep_names(subdep, result)
-    if subdep.name notin result:
-      result.add(subdep.name)
-#___________________
-proc nonim_dep_serialize (dep :Dependency; cfg :Config; cmd :var Command; seen :var seq[string]) =
-  if dep.name in seen: return
-  for subdep in dep.deps:
-    nonim_dep_serialize(subdep, cfg, cmd, seen)
-  var subdep_names :seq[string]
-  collect_transitive_dep_names(dep, subdep_names)
-  cmd.add "--dependency:" & dep.name & ":[" & subdep_names.join(",") & "]:" & dep.nonim_dep_path(cfg)
-  seen.add(dep.name)
+proc command_nim (trg :Target) :Command=
+  result = minibuild.command(trg.cfg.nim.bin)
+  result.add($trg.cfg.nim.backend)
+  for flag in trg.flags: result.add(flag)
+  for dep in trg.deps: result.add(dep.nim_paths(trg.cfg))
+  result.add(&"--out:{trg.bin()}")
+  result.add(&"--outDir:{trg.outDir()}")
+  result.add(trg.entry())
 #___________________
 proc command_nonim (trg :Target) :Command=
   result = minibuild.command(trg.cfg.nonim.bin.minz)
@@ -383,19 +394,35 @@ proc command_nonim (trg :Target) :Command=
   result.add "--binDir:" & trg.outDir()
   result.add "--cacheDir:" & trg.cfg.nonim.cache
   var seen :seq[string]
-  for dep in trg.deps:
-    nonim_dep_serialize(dep, trg.cfg, result, seen)
+  for dep in trg.deps: nonim_dep_serialize(dep, trg.cfg, result, seen)
   for flag in trg.flags: result.add flag
   result.add trg.entry()
   result.add trg.bin()
 #___________________
-proc build *(trg :Target; run :bool= false) :Target {.discardable.}=
+proc command_glsl (trg :Target) :Command=
+  result = minibuild.command(trg.cfg.glsl.bin)
+  # Internally managed flags
+  if trg.cfg.log.level <= ReportMode.quiet: result.add "-w"
+  if not trg.cfg.glsl.unsafe.warnings: result.add "-Werror"
+  # User flags
+  for dep  in trg.deps : result.add(&"-I{trg.cfg.dir.bin}/{trg.cfg.dir.lib}/{dep.name}/{dep.path}")
+  for flag in trg.flags: result.add flag
+  # Source and Output
+  result.add trg.src[0]
+  result.add "-o"
+  result.add trg.src[0] & ".spv"
+#___________________
+proc build *(
+    trg : Target;
+    run : bool = false;
+  ) :Target {.discardable.}=
   let cmd = case trg.lang
     of Language.c,
        Language.cpp  : trg.command_c()
     of Language.nim  : trg.command_nim()
     of Language.zig  : trg.command_zig()
     of Language.minz : trg.command_nonim()
+    of Language.glsl : trg.command_glsl()
     else             : assert false, "minibuild: unsupported language: " & $trg.lang; Command()
   trg.debug("Build Command:\n  " & cmd.join())
   cmd.run()
