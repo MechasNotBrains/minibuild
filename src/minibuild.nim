@@ -2,8 +2,8 @@
 #  mini.build  |  Copyright (C) Ivan Mar (sOkam!)  |  MPL-2.0 :
 #:_____________________________________________________________
 # @deps std
-from std/os import `/`, splitFile
-from std/strutils import join, escape
+from std/os import `/`, splitFile, walkDirRec, walkDir, pcFile
+from std/strutils import join, escape, contains
 from std/strformat import `&`
 from std/sequtils import toSeq
 from std/osproc import startProcess, outputStream, errorStream, waitForExit, close, ProcessOption
@@ -56,8 +56,6 @@ proc exec *(cmd :Command) :CommandResult {.discardable.}=
   result.stderr = process.errorStream().readAll()
   result.code = process.waitForExit().u8
   process.close()
-
-
 
 
 #_______________________________________
@@ -156,6 +154,50 @@ func debug *(R :Report; args :varargs[string, `$`]) :void=
 
 
 #_______________________________________
+# @section Filesystem Helpers
+#_____________________________
+func should_skip (
+    filters : openArray[Path];
+    file    : Path;
+  ) :bool=
+  for filter in filters:
+    if filter in file: return true
+#___________________
+proc glob *(
+    dir     : Path;
+    ext     : seq[string]     = @[".c"];
+    rec     : bool            = true;
+    rel     : bool            = false;
+    filters : openArray[Path] = @[];
+  ) :seq[Path]=
+  ## @descr
+  ##  Globs every file in the given folder that has the given ext.
+  ##  The resulting list of files will be relative to {@arg dir}
+  ##  {@arg ext}     Extension to search for.
+  ##  {@arg rec}     Recursive search in all folders and subfolders when true.
+  ##  {@arg rel}     Files paths will be relative to {@arg dir} when true.
+  ##  {@arg filters} List of paths that will be used to exclude/filter out files that contain any of them
+  if rec:
+    for file in dir.walkDirRec(relative=rel, skipSpecial=true):
+      if filters.shouldSkip(file)  : continue
+      if file.splitFile.ext in ext : result.add file
+  else:
+    for file in dir.walkDir(relative=rel, skipSpecial=true):
+      if file.kind != pcFile            : continue
+      if filters.shouldSkip(file.path)  : continue
+      if file.path.splitFile.ext in ext : result.add file.path
+#___________________
+proc glob *(
+    dir     : Path;
+    ext     : string          = ".c";
+    rec     : bool            = true;
+    rel     : bool            = false;
+    filters : openArray[Path] = @[];
+  ) :seq[Path]= return dir.glob(@[ext], rec, rel, filters)
+  ## @descr Alias to minibuild.glob, but with `ext :string` instead of `ext :seq[string]`
+
+
+#_______________________________________
 # @section Target: Language
 #_____________________________
 type Language *{.pure.}= enum unknown, nim, c, cpp, zig, minz, minc, glsl, wgsl
@@ -210,11 +252,6 @@ func dir_src *(D :Dependency; cfg :Config= Config()) :Path=
 func nim_paths *(D :Dependency; cfg :Config) :seq[string]=
   result.add("--path:" & cfg.dir.bin/cfg.dir.lib/D.name/D.path)
   for dep in D.deps: result.add dep.nim_paths(cfg)
-#___________________
-proc has_modules (trg :Target) :bool=
-  if trg.deps.len > 0: return true
-  for flag in trg.flags:
-    if flag.len > 2 and flag[0] == '-' and flag[1] == 'M': return true
 #___________________
 func zig_dep_only *(D :Dependency) :seq[string]=
   result.add("--dep")
@@ -309,6 +346,11 @@ proc format_exec *(trg :Target; file :Path) :CommandResult {.discardable.}=
   var cmd = fmt.cmd
   cmd.add(file)
   result = cmd.exec()
+#___________________
+proc has_modules (trg :Target) :bool=
+  if trg.deps.len > 0: return true
+  for flag in trg.flags:
+    if flag.len > 2 and flag[0] == '-' and flag[1] == 'M': return true
 #___________________
 func target *(
     kind  : Kind;
