@@ -14,6 +14,14 @@ when defined(minilog):
 
 
 #_______________________________________
+# @section stdlib: Forward Exports
+#_____________________________
+export os.`/`
+export strformat.`&`
+export strutils.contains
+
+
+#_______________________________________
 # @section Type Aliases
 #_____________________________
 type u8         * = system.uint8
@@ -186,8 +194,16 @@ proc request *(_:typedesc[char]; msg :string; alt :char= ' ') :char=
 
 
 #_______________________________________
-# @section Filesystem Helpers
+# @section Files & Filesystem Helpers
 #_____________________________
+func dirname   *(file :Path) :Path= result = os.splitFile(file).dir
+func name      *(file :Path) :Path= result = os.splitFile(file).name
+func extension *(file :Path) :Path= result = os.splitFile(file).ext
+#___________________
+func basename  *(file :Path) :Path=
+  let (dir, name, ext) = os.splitFile(file)
+  result = name & ext
+#___________________
 func should_skip (
     filters : openArray[Path];
     file    : Path;
@@ -259,22 +275,22 @@ proc ln *(src,trg :Path; symbolic :bool= true) :void {.inline.}=
   ## @todo Ignores {@arg symbolic} and only creates symbolic links. Should be able to handle both symbolic and hard links
   discard symbolic
   when defined(nimscript) : sh "ln", "-s", src, trg
-  else                    : os.createSymlink(src, trg )
+  else                    : os.createSymlink(src, trg)
 #___________________
 proc touch *(trg :Path) :void=
   ## @descr Creates the target file if it doesn't exist.
   when defined(nimscript) :
     when defined linux    : exec &"touch {trg}"
     elif defined windows  : exec &"powershell \"Get-Item {trg}\""
-  else                    : os.close(os.open(trg, mode = fmAppend))
+  else                    : system.close(system.open(trg, mode = fmAppend))
 #___________________
-proc rm *(file :Path)=
-  when defined(nimscript) : rmFile(src, trg)
-  else                    : os.removeFile(src, trg)
+proc rm *(trg :Path)=
+  when defined(nimscript) : rmFile(trg)
+  else                    : os.removeFile(trg)
 #___________________
-proc rmDir *(dir  :Path)=
-  when defined(nimscript) : rmDir(src, trg)
-  else                    : os.removeDir(src, trg)
+proc rmDir *(trg :Path)=
+  when defined(nimscript) : rmDir(trg)
+  else                    : os.removeDir(trg)
 #___________________
 template withDir *(trg :Path; body :untyped)=
   let prev = paths.getCurrentDir()
