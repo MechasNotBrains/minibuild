@@ -2,7 +2,7 @@
 #  mini.build  |  Copyright (C) Ivan Mar (sOkam!)  |  MPL-2.0 :
 #:_____________________________________________________________
 # @deps std
-from std/os import `/`, splitFile, walkDirRec, walkDir, pcFile
+from std/os import `/`, splitFile, walkDirRec, walkDir, pcFile, pcDir
 from std/strutils import join, escape, contains
 from std/strformat import `&`
 from std/sequtils import toSeq
@@ -154,6 +154,38 @@ func debug *(R :Report; args :varargs[string, `$`]) :void=
 
 
 #_______________________________________
+# @section Helpers: Shell
+#_____________________________
+from std/envvars import getEnv ; export getEnv
+#___________________
+proc sh *(cmd:string; args :varargs[string, `$`]) :void {.inline.}=
+  let commnd = cmd & " " & args.join(" ")
+  echo "Executing command:\n  ", commnd
+  try:
+    when defined(nimscript): exec commnd
+    else:
+      if os.execShellCmd(commnd) != 0: raise newException(OSError, "")
+  except: raise newException(OSError, &"Failed to run:  {commnd}")
+#___________________
+proc request *(msg :string; alt :string= "") :string=
+  # Report the {@arg msg} to the user
+  echo msg
+  # Get the line
+  result = stdin.readLine()
+  if result == "": result = alt
+#___________________
+proc request *(_:typedesc[char]; msg :string; alt :char= ' ') :char=
+  # Report the {@arg msg} to the user
+  echo msg
+  # Get the character
+  var ch = stdin.readChar()
+  result = ch
+  if result == '\n': result = alt
+  # Clear stdin of leftover characters
+  while ch != '\n': ch = stdin.readChar()
+
+
+#_______________________________________
 # @section Filesystem Helpers
 #_____________________________
 func should_skip (
@@ -195,6 +227,62 @@ proc glob *(
     filters : openArray[Path] = @[];
   ) :seq[Path]= return dir.glob(@[ext], rec, rel, filters)
   ## @descr Alias to minibuild.glob, but with `ext :string` instead of `ext :seq[string]`
+#___________________
+proc cp *(src,trg :Path) :void=
+  when defined(nimscript) : cpFile(src, trg)
+  else                    : os.copyFile(src, trg)
+#___________________
+proc cpDir *(src,trg :Path) :void=
+  when defined(nimscript) : cpDir(src, trg)
+  else                    : os.copyDir(src, trg)
+#___________________
+proc cpDir *(src,trg :string|Path; filter :openArray[string|Path]) :void=
+  ## @descr Alternative {@link cpDir} that supports passing a list of {@arg filter} paths to ignore
+  for it in src.walkDir:
+    if it.path in filter: continue
+    if   it.kind == pcFile : cp    it.path, trg/it.path.relativePath(src)
+    elif it.kind == pcDir  : cpDir it.path, trg
+    else                   : discard
+#___________________
+proc mv *(src,trg :Path) :void=
+  when defined(nimscript) : mvFile(src, trg)
+  else                    : os.moveFile(src, trg)
+#___________________
+proc md *(trg :Path) :void {.inline.}=
+  let dir = when trg is Path: trg.string else: trg
+  if os.dirExists(dir)    : echo &"Folder already exists. Not creating:  {dir}"; return
+  when defined(nimscript) : mkDir(dir)
+  else                    : os.createDir(dir)
+#___________________
+proc ln *(src,trg :Path; symbolic :bool= true) :void {.inline.}=
+  ## @descr Creates a symbolic link from {@arg src} to {@arg trg}
+  ## @todo Ignores {@arg symbolic} and only creates symbolic links. Should be able to handle both symbolic and hard links
+  discard symbolic
+  when defined(nimscript) : sh "ln", "-s", src, trg
+  else                    : os.createSymlink(src, trg )
+#___________________
+proc touch *(trg :Path) :void=
+  ## @descr Creates the target file if it doesn't exist.
+  when defined(nimscript) :
+    when defined linux    : exec &"touch {trg}"
+    elif defined windows  : exec &"powershell \"Get-Item {trg}\""
+  else                    : os.close(os.open(trg, mode = fmAppend))
+#___________________
+proc rm *(file :Path)=
+  when defined(nimscript) : rmFile(src, trg)
+  else                    : os.removeFile(src, trg)
+#___________________
+proc rmDir *(dir  :Path)=
+  when defined(nimscript) : rmDir(src, trg)
+  else                    : os.removeDir(src, trg)
+#___________________
+template withDir *(trg :Path; body :untyped)=
+  let prev = paths.getCurrentDir()
+  echo "Temporarily entering folder  ", trg
+  paths.setCurrentDir(trg)
+  body  # Run the code inside the block
+  echo "Returning to folder  ", prev.string
+  paths.setCurrentDir(prev)
 
 
 #_______________________________________
