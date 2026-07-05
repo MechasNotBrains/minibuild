@@ -437,7 +437,7 @@ proc format *(trg :Target; file :Path) :void=
   if not fmt.active: return
   var cmd = fmt.cmd
   cmd.add(file)
-  cmd.run()
+  discard cmd.exec()
 #___________________
 proc format_exec *(trg :Target; file :Path) :CommandResult {.discardable.}=
   let fmt = case trg.lang
