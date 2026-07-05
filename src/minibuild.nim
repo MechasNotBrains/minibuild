@@ -88,6 +88,7 @@ type ConfigC * = object
 #___________________
 type ConfigZig * = object
   bin       *:Path= "zig"
+  cache     *:Path= ""
   format    *:ConfigFormat= ConfigFormat(cmd: command("zig", "fmt"))
   debugger  *:bool= true
 #___________________
@@ -380,9 +381,8 @@ func zig_module *(D :Dependency; cfg :Config) :seq[string]=
   result.add("-M" & D.name & "=" & D.zig_module_path(cfg))
 #___________________
 proc nonim_dep_path (dep :Dependency; cfg :Config) :Path=
-  let lib_dir = if dep.libDir.len > 0: dep.libDir else: cfg.dir.bin/cfg.dir.lib
   let entry_file = if dep.entry.len > 0: dep.entry else: dep.name & ".zig"
-  lib_dir/dep.name/dep.path/entry_file
+  dep.dir_src()/entry_file
 #___________________
 proc collect_transitive_dep_names (dep :Dependency; result :var seq[string]) =
   for subdep in dep.deps:
@@ -513,6 +513,9 @@ proc command_zig (trg :Target) :Command=
   of Program   : result.add "build-exe"
   of UnitTest  : result.add "test"
   result.add "-femit-bin=" & trg.outDir()/trg.bin()
+  if trg.cfg.zig.cache.len > 0:
+    result.add("--cache-dir", trg.cfg.zig.cache)
+    result.add("--global-cache-dir", trg.cfg.zig.cache)
   if trg.cfg.zig.debugger: result.add "-fllvm"
   if trg.has_modules():
     for dep in trg.deps: result.add dep.zig_dep_only()
