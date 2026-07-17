@@ -513,6 +513,8 @@ proc command_zig (trg :Target) :Command=
   of Program   : result.add "build-exe"
   of UnitTest  : result.add "test"
   result.add "-femit-bin=" & trg.outDir()/trg.bin()
+  if trg.src.len > 1:
+    for file in trg.src[1..^1]: result.add(file)
   if trg.cfg.zig.cache.len > 0:
     result.add("--cache-dir", trg.cfg.zig.cache)
     result.add("--global-cache-dir", trg.cfg.zig.cache)
